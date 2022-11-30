@@ -46,6 +46,8 @@
 # ==============================================================================
 # 
 # File naming convention:
+#
+# 1. Campaign and zone numbers
 # 
 # This script uses a naming convention based on campaign and zone numbers to
 # match files when batch processing. All files must contain the following:
@@ -59,6 +61,19 @@
 # other information (e.g., c1_ebr2_z5) so long as the name does not contain
 # other instances of c## or z##
 #
+# 2. Processing phase
+#
+# This script outputs records processing steps by replacing a portion of the
+# filename with the completed processing step. For this to work, the input
+# unprocessed UAS las files from Pix4D must contain "raw" in their name.
+# 
+# This is replaced by "clsfd" for the processed export with associated spectral 
+# data and ground points classified
+# 
+# This is replaced by "grnd" for the exported file containing only the ground
+# points to be used for icp registration
+#
+# 3. Spectral band names
 # 
 # Spectral files need to also contain the corresponding band spelled out in 
 # their file name in lower case. These need to be:
@@ -68,7 +83,7 @@
 #
 # Package dependencies:
 #
-# tidyverse, ggplot2, glue, 
+# tidyverse, glue, lidR, terra, RCSF, doParallel
 #
 # ==============================================================================
 #
@@ -79,7 +94,8 @@
 library(lidR)
 library(tidyverse)
 library(glue)
-library(sf)
+library(terra)
+library(RCSF)
 library(doParallel)
 
 # ================================= User inputs ================================
@@ -91,7 +107,7 @@ spec_folder <- 'data/spectral'
 full_export <- 'data/las/uas_processed'
 grnd_export <- 'data/icp_registration/uas_ground'
 
-grndpt_csv_export <- 'data/icp_registration/n_grndpts_temp.csv'
+grndpt_csv_export <- glue('data/icp_registration/n_grndpts_{format(Sys.time(), "%Y%m%d_%H%M")}.csv')
 
 cluster_size <- 10
 
@@ -110,7 +126,7 @@ registerDoParallel(cl)
 grnd_pts <- foreach (
   las_file = raw_files,
   .combine = 'rbind',
-  .packages = c('lidR', 'tidyverse', 'glue', 'sf'),
+  .packages = c('lidR', 'tidyverse', 'glue', 'terra'),
   .export = c('raw_folder', 'full_export', 'grnd_export')
 ) %dopar% {
   
@@ -123,56 +139,32 @@ grnd_pts <- foreach (
   
   spec_files <- list.files(
     spec_folder,
-    pattern = glue('c{campaign}'),
+    pattern = glue('c{campaign}.+\\.tif'),
     full.names = TRUE) %>% 
     str_subset(glue('z{zone}'))
   
-  red <- list.files(
-    spec_folder,
-    pattern = glue('c{campaign}_z{zone}_red.tif'),
-    full.names = TRUE
-  ) %>%
+  red <- spec_files %>%
+    str_subset('red(?!edge)') %>%
     rast()
   
-  green <- list.files(
-    spec_folder,
-    pattern = glue('c{campaign}_z{zone}_green.tif'),
-    full.names = TRUE
-  ) %>%
+  green <- spec_files %>%
+    str_subset('green') %>%
     rast()
   
-  blue <- list.files(
-    spec_folder,
-    pattern = glue('c{campaign}_z{zone}_blue.tif'),
-    full.names = TRUE
-  ) %>%
+  blue <- spec_files %>%
+    str_subset('blue') %>%
     rast()
   
-  rededge <- list.files(
-    spec_folder,
-    pattern = glue('c{campaign}_z{zone}_rededge.tif'),
-    full.names = TRUE
-  ) %>%
-    raster()
+  rededge <- spec_files %>%
+    str_subset('rededge') %>%
+    rast()
   
-  nir <- list.files(
-    spec_folder,
-    pattern = glue('c{campaign}_z{zone}_nir.tif'),
-    full.names = TRUE
-  ) %>%
-    raster()
-  
-  shp_file <- st_read(shp_gdb, shp_layer) %>%
-    filter(zone == !!zone,
-           campaign == !!campaign) %>%
-    st_transform(crs(las)) %>%
-    st_zm() # drop Z value from polygon, produces error in clipping
-  
+  nir <- spec_files %>%
+    str_subset('nir') %>%
+    rast()
+
   # ------------------------- Merge spectral data ------------------------------
-  
-  las <- las %>%
-    filter_duplicates()
-  
+
   las <- las %>%
     merge_spatial(source = blue,
                   attribute = 'blue') %>%
@@ -190,13 +182,13 @@ grnd_pts <- foreach (
   
   las <- las %>%
     merge_spatial(source = rededge,
-                  attribute = 're') %>%
-    add_lasattribute(name = 're', desc = 're')
+                  attribute = 'red_edge') %>%
+    add_lasattribute(name = 'red_edge', desc = 'red_edge')
   
   las <- las %>%
     merge_spatial(source = nir,
-                  attribute = 'nir') %>%
-    add_lasattribute(name = 'nir', desc = 'nir')
+                  attribute = 'near_ir') %>%
+    add_lasattribute(name = 'near_ir', desc = 'near_ir')
   
   ndvi <- (nir - red) / (nir + red)
   
@@ -237,10 +229,7 @@ grnd_pts <- foreach (
   
   las@data <- las@data %>%
     mutate(Classification = replace(Classification, ndvi > 0.55, 1L))
-  
-  las <- las %>%
-    clip_roi(shp_file)
-  
+
   writeLAS(las,
            glue("{full_export}/{str_replace(las_file, 'raw', 'clsfd')}"))
   
