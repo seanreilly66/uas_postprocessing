@@ -48,12 +48,14 @@
 library(lidR)
 library(tidyverse)
 library(glue)
-library(sf)
+library(terra)
 library(doParallel)
 
 # ================================= User inputs ================================
 
 las_folder <- 'data/las/als'
+
+raster_output_folder <- 'data/dtm'
 
 las_output_folder <- 'data/icp_registration/als_dtm_las'
 
@@ -80,6 +82,12 @@ foreach (
   
   dtm <- readLAS(lf, filter = '-filter_class 2') %>%
     rasterize_terrain(res = dtm_resolution, algorithm = tin())
+  
+  dtm_name <- lf %>%
+    str_replace('\\.las$', '_dtm\\.tif') %>%
+    str_replace(las_folder, raster_output_folder)
+  
+  writeRaster(dtm, dtm_name)
 
   # ----------------------------- Convert to LAS -------------------------------
   
