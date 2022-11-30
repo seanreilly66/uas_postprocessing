@@ -21,8 +21,7 @@
 # matrix. The main utility of this function is to apply a transformation matrix to
 # register one las data source to another. This can be computed using external
 # software such as Lidar360. Function takes in a las file name (not loaded into memory) 
-# and a 4x4 transformation matrix as specified below. Writes las to file if filename 
-# given. Returns transformed las file.
+# and a 4x4 transformation matrix as specified below. 
 #
 # Prior to transformtion, converts point cloud to arbitrary coordinate system 
 # whereby the point cloud's minimum (X, Y, Z) are converted to (0,0,0). Only been 
@@ -34,7 +33,6 @@
 #
 # las_file = .las or .laz point cloud file name (.las for faster operation)
 # t_matrix = 4x4 transformation matrix (see specifications below)
-# las_out = OPTIONAL, las output file name
 #
 # ===============================================================================
 #
@@ -78,7 +76,7 @@
 suppressPackageStartupMessages(library('lidR'))
 suppressPackageStartupMessages(library('tidyverse'))
 
-lastransformation <- function(las_file, t_matrix, las_out = NULL) {
+lastransformation <- function(las_file, t_matrix) {
   
 # =================== Convert to arbitrary coordinate system ====================
   
@@ -108,25 +106,6 @@ lastransformation <- function(las_file, t_matrix, las_out = NULL) {
   las$X <- crd[,1]
   las$Y <- crd[,2]
   las$Z <- crd[,3]
-  
-  bound <- rbind(range(las$X),
-                 range(las$Y),
-                 range(las$Z))
-  
-  las@bbox[1:2,1:2] <- bound[1:2,]
-  
-  las@header@PHB$`Min X` <- bound[1,1]
-  las@header@PHB$`Max X` <- bound[1,2]
-  las@header@PHB$`Min Y` <- bound[2,1]
-  las@header@PHB$`Max Y` <- bound[1,2]
-  las@header@PHB$`Min Z` <- bound[3,1]
-  las@header@PHB$`Max Z` <- bound[1,2]
-  
-# ============================== Write las to file ==============================
-  
-  if (!is.null(las_out)) {
-    writeLAS(las, las_out)
-  }
   
   return(las)
   
