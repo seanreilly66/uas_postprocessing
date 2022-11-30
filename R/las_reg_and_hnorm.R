@@ -1,15 +1,15 @@
 # ==============================================================================
 #
-# UAS LAS height normalization and registration using ground ICP matrices
+# UAS LAS Registration and Height Normalization
 #
 # ==============================================================================
 #
 # Author: Sean Reilly, sean.reilly66@gmail.com
 #
 # Created: 10 Aug 2021
-# Last commit: 17 Jan 2022
+# Last commit: 30 Nov 2022
 #
-# Status: Needs documentation
+# Status: Finalzied
 #
 # Originated with 2019 Pepperwood UAS study. Finalized for 2021 UAS biomass study.
 #
@@ -17,13 +17,80 @@
 #
 # Description:
 #
-# Reads in uas las files that have been classified. Must contain uas_clsfd.las at
-# end of name in accordance with project naming convention to be identified.
+# Performs registration of UAS LAS file using a transformation matrix produced
+# by lidar360. Height normalizes the resulting transformed matrix using the
+# previously generated ALS DTM.
 #
 # ==============================================================================
 #
 # User inputs:
 #
+# uas_las_folder = Folder containing classified uas las files. See naming 
+#                  convention documentation for additional details
+# als_dtm_folder = Folder containing ALS DTM raster files 
+# icp_matrix_folder = Folder containing icp matrix excel files. See naming
+#                     convention documentation for additional details
+# grndpts_output = Output csv filename for quality control ground point check
+# las_transform_path = File path to las_transformation.R function script
+# cluster_size = Number of files to process at once
+# 
+#
+# ==============================================================================
+# 
+# File naming convention:
+#
+# 1. Campaign and zone numbers
+# 
+# This script uses a naming convention based on campaign and zone numbers to
+# match files when batch processing. All files must contain the following:
+# 
+# campaign number in the format c## 
+# zone or plot number in the format z##
+# 
+# example for uas file from campaign 1 zone 3: c1_z3
+# 
+# campaign and zone numbers do not need to be adjacent and can be separated by
+# other information (e.g., c1_ebr2_z5) so long as the name does not contain
+# other instances of c## or z##
+#
+# 2. LAS Processing phase
+#
+# This script outputs records processing steps by replacing a portion of the
+# filename with the completed processing step. This step of the processing
+# requires the input files to contain "clsfd" in the name as output by
+# uas_ground_classification.R in order to correctly identify which las files
+# are in the appropriate input state and format
+# 
+# This is replaced by "reg_{type}" for the registered file output and hnorm
+# for the height normalized final output. {Type} refers to canopy or ground 
+# registration. See below for additional details
+#
+# 3. ICP matrices
+# 
+# ICP matrices must be stored in an excel file by campaign with the campaign
+# number in the filename following the c## convention as described above. The 
+# filename must also contain either "grnd" or "cnpy" depending on whether the
+# matrices were generated using ground points only (grnd) or if canopy points
+# also had to be included in instances with insufficient ground points (cnpy).
+# This information is extracted from the title and appended to the output file
+# name. For sites that require a mix of methods, two separate excel files must
+# be generated - one "grnd" and one "cnpy" containing the subset of zones on 
+# which the designated method was applied. Script will fail if a zone is 
+# contained in both excel files.
+# 
+# Within the excel file, each zone must be stored on a separate sheet named by 
+# the zone number, in the format z##. The 4x4 matrix values must be contained in 
+# the first rows and columns without any titles.
+# 
+# ==============================================================================
+#
+# Package dependencies:
+#
+# tidyverse, glue, lidR, terra, RCSF, doParallel
+#
+# ==============================================================================
+#
+# 
 # ==============================================================================
 #
 # Package dependencies:
@@ -36,22 +103,24 @@
 
 library(lidR)
 library(tidyverse)
-library(ggpubr)
 library(glue)
+library(terra)
 library(doParallel)
 library(readxl)
 
 # ================================= User inputs ================================
 
-icp_matrix_folder <- 'data/las/icp_registration/icp_matrices'
+uas_las_folder <- 'data/las/uas_processed'
 
-uas_las_folder <- 'data/las/uas'
+als_dtm_folder <- 'data/dtm'
 
-als_dtm_folder <- 'data/dtm/als'
+icp_matrix_folder <- 'data/icp_registration/icp_matrices'
 
-grndpts_output <- 'data/las/icp_registration/ground_points/registered_grndpts_temp.csv'
+grndpts_output <- glue('data/icp_registration/registered_grndpts_{format(Sys.time(), "%Y%m%d_%H%M")}.csv')
 
 las_transform_path <- 'R/las_transformation.R'
+
+cluster_size <- 10
 
 # ==============================================================================
 # =================== Registration and height normalization ==================== 
@@ -59,92 +128,98 @@ las_transform_path <- 'R/las_transformation.R'
 
 # -------------- Setup parallel processing and load matching files ------------- 
 
-uas_files <- list.files(path = uas_las_folder,
-                        pattern = 'uas_clsfd.las$',
-                        full.names = TRUE)
+clsfd_files <- list.files(path = uas_las_folder, pattern = 'clsfd')
 
-cl <- makeCluster(6)
+cl <- makeCluster(cluster_size)
 registerDoParallel(cl)
 
 grndpts <- foreach (
-  uas = uas_files,
+  uas_file = clsfd_files,
   .combine = 'rbind',
-  .packages = c('lidR', 'tidyverse', 'glue', 'sf', 'raster', 'readxl')
+  .packages = c('lidR', 'tidyverse', 'glue', 'terra', 'readxl')
 ) %dopar% {
   
   source(las_transform_path)
   
-  c <- str_extract(uas, '(?<=c)[:digit:]+')
-  z <- str_extract(uas, '(?<=z)[:digit:]+')
+  campaign <- str_extract(uas_file, '(?<=c)[:digit:]+')
+  zone <- str_extract(uas_file, '(?<=z)[:digit:]+')
   
-  als_dtm <- list.files(
-    path = als_dtm_folder,
-    pattern = glue('c{c}_z{z}_als'),
-    full.names = TRUE
-  ) %>% 
-    raster()
+  als_dtm <- list.files(als_dtm_folder,
+                        pattern = glue('c{campaign}.+\\.tif'),
+                        full.names = TRUE) %>%
+    str_subset(glue('z{zone}')) %>%
+    rast()
   
   icp_matrix <- list.files(path = icp_matrix_folder,
-                           pattern = glue('c{c}'),
+                           pattern = glue('c{campaign}'),
                            full.names = TRUE)
   
   # Identify matrix for sites that required canopy alignment at some plots
   if (length(icp_matrix > 1)) {
     for (x in icp_matrix) {
       sheets = excel_sheets(x)
-      if (glue('z{z}') %in% sheets) {
+      if (glue('z{zone}') %in% sheets) {
         icp_matrix <- x
       }
     }
   }
   
-  matrix_type <- str_extract(icp_matrix, '(?<=icpmat_)[:alpha:]+')
-  
+  if (str_detect(icp_matrix, 'grnd')) {
+    matrix_type <- 'grnd'
+  } else if (str_detect(icp_matrix, 'cnpy')) {
+    matrix_type <- 'cnpy'
+  } else {
+    stop('Incorrect icp matrix file designation: ', icp_matrix)
+  }
+
   icp_matrix <- read_xlsx(
     path = icp_matrix,
-    sheet = glue('z{z}'),
+    sheet = glue('z{zone}'),
     col_names = FALSE,
     range = 'A1:D4'
   ) %>%
     as.matrix()
-  
-  
-  # ------------------------- ICP matrix registration -------------------------- 
-  
-  las <- lastransformation(las_file = uas,
+
+  # ------------------------- ICP matrix registration --------------------------
+
+  las <- lastransformation(las_file = glue(uas_las_folder, '/', uas_file),
                            t_matrix = icp_matrix)
   
-  writeLAS(las,
-           file = str_replace(uas, 'clsfd', glue('reg_{matrix_type}')))
-  
+  reg_filename <- str_replace(uas_file, 'clsfd', glue('reg_{matrix_type}')) %>%
+    glue(uas_las_folder, '/', .)
+
+  writeLAS(las, file = reg_filename)
+
   # ---------- Extract ground points and dtm Z for offset confirmation ---------
-  
+
   grnd <- las %>%
     filter_ground() %>%
     merge_spatial(source = als_dtm,
                   attribute = 'dtm_z')
-  
+
   # --------------------- DTM based height normalization ---------------------
-  
+
   las <- normalize_height(las, als_dtm, na.rm = TRUE, add_lasattribute = TRUE)
+
+  hnorm_filename <- str_replace(uas_file, 'clsfd', 'hnorm') %>%
+    glue(uas_las_folder, '/', .)
   
-  writeLAS(las, 
-           file = str_replace(uas, 'clsfd', 'hnrm'))
-  
+  writeLAS(las, file = hnorm_filename)
+
   # ---------------------- Output ground points dataset ----------------------
-  
+
   if (matrix_type == 'grnd') {
     grnd <- grnd@data %>%
       rename(uas_z = Z) %>%
       select(uas_z, dtm_z) %>%
-      add_column(zone = z,
-                 campaign = c) 
+      add_column(zone = zone,
+                 campaign = campaign)
   } else {
     grnd <- data.frame(
       uas_z = NA,
       dtm_z = NA,
-      zone = z, 
-      campaign = c
+      zone = zone,
+      campaign = campaign
     )
   }
   
@@ -153,97 +228,3 @@ grndpts <- foreach (
 write_csv(grndpts, grndpts_output)
 
 stopCluster(cl)
-
-# ==============================================================================
-# ====================== Ground point registration check ======================= 
-# ==============================================================================
-
-x <- grndpts_output %>%
-  read_csv() %>%
-  mutate(across(c('zone', 'campaign'), as.factor))
-
-theme_set(
-  theme(
-    text = element_text(family = 'serif', face = 'plain'),
-    axis.title = element_text(size = 16),
-    axis.text = element_text(size = 14),
-    line = element_line(size = 1),
-    axis.line = element_line(),
-    panel.background = element_rect(color = 'white'),
-    legend.title = element_text(size = 16),
-    legend.text = element_text(size = 14),
-    legend.key = element_blank(),
-    legend.spacing = unit(0, "cm"),
-    legend.margin = margin(0,0,0,0)
-  )
-)
-
-for (c in unique(x$campaign)) {
-
-  y <- x %>%
-    filter(campaign == c)
-
-  for (z in unique(y$zone)) {
-
-    fig1 = ggplot(data = y %>%
-                    filter(zone == z),
-                  mapping = aes(x = uas_z,
-                                y = dtm_z)) +
-      ggtitle(glue('campaign {c} zone {z}')) +
-      geom_abline(slope = 1) +
-      geom_point(size = 0.5) +
-      stat_regline_equation()
-
-    ggsave(
-      fig1,
-      filename =
-        glue(
-          'data/las/icp_registration/ground_points/grndpt_icpreg_figs/c{c}_z{z}_grndpt_icpreg.png'
-        ),
-      width = 4,
-      height = 4,
-      units = 'in',
-      dpi = 300
-    )
-
-  }
-}
-
-# ==============================================================================
-# =========================== Manual alignment check =========================== 
-# ==============================================================================
-
-# This part requires manual manipulation from the user so should only be 
-# left out when sourcing previous sections of script.
-# 
-# dir <- 'data/las/uas'
-# 
-# uas_files <- list.files(dir, pattern = 'uas_reg', full.names = TRUE) %>%
-#   str_subset('c1_z9')
-# 
-# i = 1
-# 
-# x <- uas_files[i]
-# 
-# c <- str_extract(x, '(?<=_c)[:digit:]+')
-# z <- str_extract(x, '(?<=_z)[:digit:]+')
-# r <- str_extract(x, '(?<=reg_)[:alpha:]+')
-# 
-# print(c)
-# print(z)
-# print(r)
-# 
-# uas <- readLAS(x, filter = '-keep_random_fraction 0.005')
-# 
-# als <- list.files('data/las/als', pattern = glue('c{c}_z{z}'), full.names = TRUE) %>%
-#   readLAS(filter = '-keep_random_fraction 0.05') %>%
-#   clip_roi(extent(uas))
-# 
-# y <- plot(als, colorPalette = 'grey')
-# plot(uas, colorPalette = 'red', add = y)
-# 
-# i = i + 1
-# 
-# plot(uas)
-
-# ==============================================================================
