@@ -35,8 +35,10 @@
 #
 # raw_folder = Folder containing raw las files from pix4d
 # spec_folder = Folder containing spectral files from pix4d
-# shp_folder = Folder containing shapefiles for each uas zone. Names must be able
-#       to match to las files by campaign and have zone number attribute.
+# zone_clip = TRUE/FALSE to toggle clipping las file to zone boundary
+# shp_gdb = Geodatabse containing shp_layer
+# shp_layer = Geodatabase layer containing uas zones. Attributes must include
+#       "campaign" and "zone" to match to las file
 # full_export = Folder for export of full las
 # grnd_export = Folder for export of las containing only ground points
 # grndpt_csv_export = File name for export of csv containing number of ground 
@@ -60,6 +62,9 @@
 # campaign and zone numbers do not need to be adjacent and can be separated by
 # other information (e.g., c1_ebr2_z5) so long as the name does not contain
 # other instances of c## or z##
+#
+# shape file clipping layer must contain numeric attributes labelled as "zone"
+# and "campaign" to correctly match features
 #
 # 2. Processing phase
 #
@@ -103,6 +108,10 @@ library(doParallel)
 raw_folder <- 'data/las/uas_raw'
 
 spec_folder <- 'data/spectral'
+
+zone_clip <- TRUE
+shp_gdb <- 'data/spatial/ssu_3dforests.gdb'
+shp_layer <- 'uas_zones'
 
 full_export <- 'data/las/uas_processed'
 grnd_export <- 'data/icp_registration/uas_ground'
@@ -230,6 +239,23 @@ grnd_pts <- foreach (
   las@data <- las@data %>%
     mutate(Classification = replace(Classification, ndvi > 0.55, 1L))
 
+  # --------------------------- Clip to zone boundary -------------------------- 
+  
+  if (zone_clip) {
+  
+    shp_file <- read_sf(shp_gdb, shp_layer) %>%
+      filter(zone == !!zone,
+             campaign == !!campaign) %>%
+      st_transform(crs(las)) %>%
+      st_zm() # drop Z value from polygon, produces error in clipping
+    
+    las <- las %>%
+      clip_roi(shp_file)
+    
+  }
+  
+  # --------------------------------- Las export -------------------------------
+  
   writeLAS(las,
            glue("{full_export}/{str_replace(las_file, 'raw', 'clsfd')}"))
   
