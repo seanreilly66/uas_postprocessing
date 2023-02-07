@@ -141,7 +141,7 @@ grnd_pts <- foreach (
     spec_folder,
     pattern = glue('c{campaign}.+\\.tif'),
     full.names = TRUE) %>% 
-    str_subset(glue('z{zone}'))
+    str_subset(glue('z{zone}_'))
   
   red <- spec_files %>%
     str_subset('red(?!edge)') %>%
