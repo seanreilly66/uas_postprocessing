@@ -75,7 +75,7 @@ registerDoParallel(cl)
 
 foreach (
   lf = las_files,
-  .packages = c('lidR', 'tidyverse', 'glue', 'sf')
+  .packages = c('lidR', 'tidyverse', 'glue', 'sf', 'terra')
 ) %dopar% {
   
   # --------------------------- Generate raster DTM ---------------------------- 
